@@ -1,0 +1,7 @@
+target/
+dist/
+*.deb
+*.db
+user_memory.txt
+config.properties
+.env
