@@ -105,7 +105,7 @@ public class Controller {
             + "You have a sharp, confident, witty, straight-talking mind of your own. "
             + "Understand slang, sarcasm, and casual banter naturally ('you' = Intenso AI, 'I/me' = the user). "
             + "Match the user's energy, keep casual replies punchy and authentic, and lead directly with the answer—no corporate filler. "
-            + "Trust [Current time], [Permanent User Memory], [Web search results], and [Past chat memory] as absolute ground truth. "
+            + "You HAVE live web search enabled via [Web search results]. Never say you lack real-time web access or internet access. Trust [Current time], [Permanent User Memory], [Web search results], and [Past chat memory] as absolute ground truth. "
             + "Never pretend you don't know facts stored in [Permanent User Memory]. "
             + "Write complete, clean, runnable code with zero placeholders.";
 
@@ -1768,7 +1768,7 @@ public class Controller {
         boolean useSmartModel = !forceFast && (forcePro || needsSmartModel(userText, targetChat.history));
         String chosenModel = useSmartModel ? GROQ_SMART_MODEL : GROQ_FAST_MODEL;
 
-        boolean needsWeb = !noWeb && (forceWeb || shouldSearchWeb(userText));
+        boolean needsWeb = userText.toLowerCase().matches(".*\\b(search|web|google|internet|online|lookup|look up|find out|latest|news|today|current|currently|price|weather|score|release|released|launch|launched|date|out yet|gta|2025|2026|who is|what is|when is|when did|did .* come out)\\b.*");
         String memoryContext = buildCrossChatMemory(userText, targetChat);
 
         VBox aiMessageBox = createMessageContainer(false);
@@ -2340,42 +2340,75 @@ public class Controller {
     }
 
     private String fetchWebContext(String query) {
+        StringBuilder results = new StringBuilder();
         try {
-            String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8);
+            String formBody = "q=" + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&kl=us-en";
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("[https://html.duckduckgo.com/html/?q=](https://html.duckduckgo.com/html/?q=)" + encoded))
-                    .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36")
-                    .timeout(Duration.ofSeconds(4))
-                    .GET()
+                    .uri(URI.create("https://html.duckduckgo.com/html/"))
+                    .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .header("Referer", "https://html.duckduckgo.com/")
+                    .timeout(Duration.ofSeconds(6))
+                    .POST(HttpRequest.BodyPublishers.ofString(formBody))
                     .build();
 
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (resp.statusCode() != 200) return "";
+            if (resp.statusCode() == 200) {
+                String html = resp.body();
+                Pattern titlePattern = Pattern.compile("class=\"result__a\"[^>]*>(.*?)</a>", Pattern.DOTALL);
+                Pattern snippetPattern = Pattern.compile("class=\"result__snippet\"[^>]*>(.*?)</(?:a|div|span)>", Pattern.DOTALL);
+                Matcher titleMatcher = titlePattern.matcher(html);
+                Matcher snippetMatcher = snippetPattern.matcher(html);
 
-            String html = resp.body();
-            Pattern titlePattern = Pattern.compile("class=\"result__a\"[^>]*>(.*?)</a>", Pattern.DOTALL);
-            Pattern snippetPattern = Pattern.compile("class=\"result__snippet\"[^>]*>(.*?)</a>", Pattern.DOTALL);
-            Matcher titleMatcher = titlePattern.matcher(html);
-            Matcher snippetMatcher = snippetPattern.matcher(html);
-
-            StringBuilder results = new StringBuilder();
-            int count = 0;
-            while (snippetMatcher.find() && count < 4) {
-                String title = titleMatcher.find() ? stripHtml(titleMatcher.group(1)) : "";
-                String snippet = stripHtml(snippetMatcher.group(1));
-                if (!snippet.isEmpty()) {
-                    count++;
-                    results.append(count).append(". ");
-                    if (!title.isEmpty()) {
-                        results.append("[").append(title).append("] ");
+                int count = 0;
+                while (snippetMatcher.find() && count < 5) {
+                    String title = titleMatcher.find() ? stripHtml(titleMatcher.group(1)) : "";
+                    String snippet = stripHtml(snippetMatcher.group(1));
+                    if (!snippet.isEmpty()) {
+                        count++;
+                        results.append(count).append(". ");
+                        if (!title.isEmpty()) results.append("[").append(title).append("] ");
+                        results.append(snippet).append("\n");
                     }
-                    results.append(snippet).append("\n");
                 }
             }
-            return results.toString();
-        } catch (Exception e) {
-            return "";
+        } catch (Exception ignored) {
         }
+
+        if (results.length() == 0) {
+            try {
+                String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8);
+                HttpRequest wikiReq = HttpRequest.newBuilder()
+                        .uri(URI.create("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&utf8=1&srlimit=4&srsearch=" + encoded))
+                        .header("User-Agent", "IntensoAI/1.0 (Desktop Assistant)")
+                        .timeout(Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> wikiResp = httpClient.send(wikiReq, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                if (wikiResp.statusCode() == 200) {
+                    String json = wikiResp.body();
+                    Pattern wpTitle = Pattern.compile("\"title\":\"(.*?)\"");
+                    Pattern wpSnip = Pattern.compile("\"snippet\":\"(.*?)\"");
+                    Matcher tm = wpTitle.matcher(json);
+                    Matcher sm = wpSnip.matcher(json);
+                    int count = 0;
+                    while (tm.find() && sm.find() && count < 4) {
+                        String t = stripHtml(tm.group(1).replace("\\u003C", "<").replace("\\u003E", ">").replace("\\\"", "\""));
+                        String s = stripHtml(sm.group(1).replace("\\u003C", "<").replace("\\u003E", ">").replace("\\\"", "\""));
+                        if (!s.isEmpty()) {
+                            count++;
+                            results.append(count).append(". [Wikipedia: ").append(t).append("] ").append(s).append("\n");
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        return results.toString();
     }
 
     private String stripHtml(String s) {
@@ -2471,7 +2504,7 @@ public class Controller {
 
                 boolean isLocal = candidate.startsWith("LOCAL:");
                 String actualModel = isLocal ? candidate.substring(6) : candidate;
-                int maxTokens = actualModel.equals(GROQ_FAST_MODEL) ? 450 : 1200;
+                int maxTokens = actualModel.equals(GROQ_FAST_MODEL) ? 8192 : 16384;
 
                 HttpRequest request;
                 if (!isLocal) {
