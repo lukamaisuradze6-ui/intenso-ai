@@ -1,7 +1,6 @@
 target/
 dist/
 *.deb
+*.log
+*.bak
 *.db
-user_memory.txt
-config.properties
-.env

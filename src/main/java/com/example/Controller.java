@@ -1,5 +1,8 @@
 package com.example;
 
+import java.io.File;
+import javafx.scene.control.Tooltip;
+
 import javafx.animation.AnimationTimer;
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
@@ -15,6 +18,9 @@ import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
+import javafx.stage.FileChooser;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.KeyCode;
@@ -570,7 +576,112 @@ public class Controller {
         }
     }
 
-    // --- API Key Configuration & Onboarding Settings UI ---
+    // --- API Key Configuration, Live Verification & Pro Licensing UI ---
+
+    private static final class AttachedFile {
+        final String name;
+        final String content;
+        final long sizeBytes;
+        AttachedFile(String name, String content, long sizeBytes) {
+            this.name = name;
+            this.content = content;
+            this.sizeBytes = sizeBytes;
+        }
+    }
+    private final List<AttachedFile> attachedFiles = new ArrayList<>();
+    private HBox attachmentPillBar = null;
+    private Button attachFileButton = null;
+
+    private String storedProLicenseKey = "";
+
+    private void setupDragAndDropFiles(HBox inputBar) {
+        if (titleBar.getScene() == null || titleBar.getScene().getRoot() == null) return;
+        Parent root = titleBar.getScene().getRoot();
+
+        if (attachmentPillBar == null && inputBar.getParent() instanceof VBox) {
+            VBox outerBox = (VBox) inputBar.getParent();
+            int idx = outerBox.getChildren().indexOf(inputBar);
+            if (idx >= 0) {
+                attachmentPillBar = new HBox(8);
+                attachmentPillBar.setAlignment(Pos.CENTER_LEFT);
+                attachmentPillBar.setPadding(new Insets(0, 4, 6, 4));
+                attachmentPillBar.setVisible(false);
+                attachmentPillBar.setManaged(false);
+                outerBox.getChildren().add(idx, attachmentPillBar);
+            }
+        }
+
+        root.setOnDragOver(event -> {
+            Dragboard db = event.getDragboard();
+            if (db.hasFiles()) {
+                event.acceptTransferModes(TransferMode.COPY);
+            }
+            event.consume();
+        });
+
+        root.setOnDragDropped(event -> {
+            Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasFiles()) {
+                for (File f : db.getFiles()) {
+                    attachFileFromDisk(f);
+                }
+                success = true;
+            }
+            event.setDropCompleted(success);
+            event.consume();
+        });
+    }
+
+    private void openFilePickerForAttachment() {
+        if (titleBar.getScene() == null || titleBar.getScene().getWindow() == null) return;
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Attach Code or Text File to Intenso AI");
+        List<File> selected = chooser.showOpenMultipleDialog(titleBar.getScene().getWindow());
+        if (selected != null) {
+            for (File f : selected) {
+                attachFileFromDisk(f);
+            }
+        }
+    }
+
+    private void attachFileFromDisk(File f){if(f==null||!f.isFile())return;try{String l=f.getName().toLowerCase(),t=null;if(l.endsWith(".odt"))t=extractZipXml(f,"content.xml");else if(l.endsWith(".docx"))t=extractZipXml(f,"word/document.xml");else if(l.endsWith(".pdf")){Process p=new ProcessBuilder("pdftotext",f.getAbsolutePath(),"-").start();t=new String(p.getInputStream().readAllBytes(),"UTF-8");}if(t==null||t.isEmpty()){byte[] r=Files.readAllBytes(f.toPath());t=new String(r,0,Math.min(r.length,60000),"UTF-8");}if(t.length()>60000)t=t.substring(0,60000);synchronized(attachedFiles){attachedFiles.removeIf(x->x.name.equals(f.getName()));if(attachedFiles.size()>=5)attachedFiles.remove(0);attachedFiles.add(new AttachedFile(f.getName(),t,f.length()));}refreshAttachmentPillBar();inputField.requestFocus();}catch(Exception e){}} private String extractZipXml(File f,String e)throws Exception{try(var z=new java.util.zip.ZipFile(f)){var en=z.getEntry(e);if(en==null)return "";return new String(z.getInputStream(en).readAllBytes(),"UTF-8").replaceAll("</(text:p|text:h|w:p|w:tr|table:table-row)>","\n").replaceAll("<[^>]+>","").replace("&amp;","&").replace("&lt;","<").replace("&gt;",">").replace("&quot;","\"").trim();}}
+
+    private void refreshAttachmentPillBar() {
+        if (attachmentPillBar == null) return;
+        attachmentPillBar.getChildren().clear();
+        List<AttachedFile> snapshot;
+        synchronized (attachedFiles) {
+            snapshot = new ArrayList<>(attachedFiles);
+        }
+        if (snapshot.isEmpty()) {
+            attachmentPillBar.setVisible(false);
+            attachmentPillBar.setManaged(false);
+            return;
+        }
+        for (AttachedFile af : snapshot) {
+            long kb = Math.max(1, af.sizeBytes / 1024);
+            Label nameLbl = new Label("📄 " + af.name + " (" + kb + " KB)");
+            nameLbl.setStyle("-fx-text-fill: #e0e7ff; -fx-font-size: 11.5px; -fx-font-weight: bold;");
+
+            Button removeBtn = new Button("×");
+            removeBtn.setStyle("-fx-background-color: transparent; -fx-text-fill: #94a3b8; -fx-font-size: 13px; -fx-font-weight: bold; -fx-padding: 0 2 0 4; -fx-cursor: hand;");
+            removeBtn.setOnAction(e -> {
+                synchronized (attachedFiles) {
+                    attachedFiles.remove(af);
+                }
+                refreshAttachmentPillBar();
+            });
+
+            HBox pill = new HBox(4, nameLbl, removeBtn);
+            pill.setAlignment(Pos.CENTER_LEFT);
+            pill.setPadding(new Insets(4, 10, 4, 10));
+            pill.setStyle("-fx-background-color: #1e1b4b; -fx-border-color: #4f46e5; -fx-border-width: 1px; -fx-background-radius: 999px; -fx-border-radius: 999px;");
+            attachmentPillBar.getChildren().add(pill);
+        }
+        attachmentPillBar.setVisible(true);
+        attachmentPillBar.setManaged(true);
+    }
 
     private void loadConfig() {
         if (!Files.exists(CONFIG_FILE)) return;
@@ -578,87 +689,128 @@ public class Controller {
         try (InputStream in = Files.newInputStream(CONFIG_FILE)) {
             props.load(in);
             storedGroqApiKey = props.getProperty("groq.api.key", "").trim();
-        } catch (Exception ignored) {
-        }
+            storedProLicenseKey = props.getProperty("pro.license.key", "").trim();
+        } catch (Exception ignored) {}
     }
 
-    private void saveConfig(String newApiKey) {
+    private void saveConfig(String newApiKey, String newLicenseKey) {
         storedGroqApiKey = (newApiKey == null) ? "" : newApiKey.trim();
+        storedProLicenseKey = (newLicenseKey == null) ? "" : newLicenseKey.trim();
         try {
             Files.createDirectories(APP_DIR);
             Properties props = new Properties();
             props.setProperty("groq.api.key", storedGroqApiKey);
+            props.setProperty("pro.license.key", storedProLicenseKey);
             Path tmp = CONFIG_FILE.resolveSibling("config.properties.tmp");
             try (OutputStream out = Files.newOutputStream(tmp)) {
                 props.store(out, "Intenso AI Configuration");
             }
             Files.move(tmp, CONFIG_FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
+    }
+
+    private void saveConfig(String newApiKey) {
+        saveConfig(newApiKey, storedProLicenseKey);
+    }
+
+    private boolean isProUnlocked() {
+        return storedProLicenseKey != null && storedProLicenseKey.trim().length() >= 12;
     }
 
     private String getEffectiveApiKey() {
-        if (storedGroqApiKey != null && !storedGroqApiKey.isBlank()) {
-            return storedGroqApiKey.trim();
-        }
+        if (storedGroqApiKey != null && !storedGroqApiKey.isBlank()) return storedGroqApiKey.trim();
         String envKey = System.getenv("GROQ_API_KEY");
         return (envKey != null && !envKey.isBlank()) ? envKey.trim() : "";
+    }
+
+    private void openExternalUrl(String url) {
+        try {
+            ClipboardContent cc = new ClipboardContent();
+            cc.putString(url);
+            Clipboard.getSystemClipboard().setContent(cc);
+        } catch (Exception ignored) {}
+        new Thread(() -> {
+            try {
+                if (System.getProperty("os.name", "").toLowerCase().contains("linux")) {
+                    new ProcessBuilder("xdg-open", url).start();
+                } else if (java.awt.Desktop.isDesktopSupported()) {
+                    java.awt.Desktop.getDesktop().browse(URI.create(url));
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
 
     private void showApiKeySettingsDialog(boolean isFirstRun) {
         if (titleBar.getScene() == null || titleBar.getScene().getWindow() == null) return;
         Stage owner = (Stage) titleBar.getScene().getWindow();
-
         Stage dialog = new Stage(StageStyle.UNDECORATED);
         dialog.initOwner(owner);
         dialog.initModality(Modality.APPLICATION_MODAL);
 
         VBox card = new VBox(14);
-        card.setPadding(new Insets(22));
-        card.setPrefWidth(440);
-        card.setStyle(
-                "-fx-background-color: #161622; "
-                + "-fx-border-color: #34344e; "
-                + "-fx-border-width: 1.5px; "
-                + "-fx-border-radius: 14px; "
-                + "-fx-background-radius: 14px;"
-        );
+        card.setPadding(new Insets(24));
+        card.setPrefWidth(480);
+        card.setStyle("-fx-background-color: #161622; -fx-border-color: #34344e; -fx-border-width: 1.5px; -fx-border-radius: 14px; -fx-background-radius: 14px;");
 
-        Label heading = new Label(isFirstRun ? "Welcome to Intenso AI" : "Intenso AI Settings");
-        heading.setStyle("-fx-text-fill: #f4f4f6; -fx-font-size: 16px; -fx-font-weight: bold;");
+        Label heading = new Label(isFirstRun ? "Welcome to Intenso AI" : "Intenso AI Settings & License");
+        heading.setStyle("-fx-text-fill: #f4f4f6; -fx-font-size: 17px; -fx-font-weight: bold;");
 
-        Label desc = new Label(
-                "Enter your free Groq API key (gsk_...) to enable fast cloud responses and voice transcription. "
-                + "Your key is stored locally on your machine in ~/.my-ai-app/config.properties."
-        );
+        Label desc = new Label("1. Paste your free Groq API key (gsk_...) for cloud responses & live web search.\n2. Optional: Enter your Intenso AI Pro License Key to unlock Pro features.");
         desc.setWrapText(true);
         desc.setStyle("-fx-text-fill: #9898b0; -fx-font-size: 12.5px;");
 
-        PasswordField keyField = new PasswordField();
-        keyField.setPromptText("gsk_...");
-        keyField.setText(getEffectiveApiKey());
-        keyField.setStyle(
-                "-fx-background-color: #101018; "
-                + "-fx-text-fill: #f4f4f6; "
-                + "-fx-prompt-text-fill: #5a5a72; "
-                + "-fx-font-size: 13px; "
-                + "-fx-padding: 10px 12px; "
-                + "-fx-background-radius: 9px; "
-                + "-fx-border-color: #2f2f46; "
-                + "-fx-border-radius: 9px;"
-        );
+        String inputStyle = "-fx-background-color: #101018; -fx-text-fill: #f4f4f6; -fx-prompt-text-fill: #5a5a72; -fx-font-size: 13px; -fx-padding: 10px 12px; -fx-background-radius: 9px; -fx-border-color: #2f2f46; -fx-border-radius: 9px;";
+
+        Label apiLabel = new Label("Groq API Key");
+        apiLabel.setStyle("-fx-text-fill: #cbd5e1; -fx-font-size: 12px; -fx-font-weight: bold;");
+
+        PasswordField maskedKeyField = new PasswordField();
+        maskedKeyField.setPromptText("gsk_...");
+        maskedKeyField.setText(getEffectiveApiKey());
+        maskedKeyField.setStyle(inputStyle);
+        HBox.setHgrow(maskedKeyField, Priority.ALWAYS);
+
+        TextField plainKeyField = new TextField();
+        plainKeyField.setPromptText("gsk_...");
+        plainKeyField.setText(getEffectiveApiKey());
+        plainKeyField.setStyle(inputStyle);
+        plainKeyField.setVisible(false);
+        plainKeyField.setManaged(false);
+        HBox.setHgrow(plainKeyField, Priority.ALWAYS);
+        maskedKeyField.textProperty().bindBidirectional(plainKeyField.textProperty());
+
+        Button toggleShowBtn = new Button("Show");
+        toggleShowBtn.setStyle(TOP_BTN_DEFAULT_STYLE);
+        toggleShowBtn.setOnAction(e -> {
+            boolean show = !plainKeyField.isVisible();
+            plainKeyField.setVisible(show);
+            plainKeyField.setManaged(show);
+            maskedKeyField.setVisible(!show);
+            maskedKeyField.setManaged(!show);
+            toggleShowBtn.setText(show ? "Hide" : "Show");
+        });
+
+        HBox apiRow = new HBox(8, maskedKeyField, plainKeyField, toggleShowBtn);
+        apiRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label proLabel = new Label(isProUnlocked() ? "Pro License Key (Active)" : "Pro License Key (Optional)");
+        proLabel.setStyle(isProUnlocked() ? "-fx-text-fill: #6ee7b7; -fx-font-size: 12px; -fx-font-weight: bold;" : "-fx-text-fill: #cbd5e1; -fx-font-size: 12px; -fx-font-weight: bold;");
+
+        TextField licenseField = new TextField();
+        licenseField.setPromptText("INT-PRO-XXXX-XXXX-XXXX");
+        licenseField.setText(storedProLicenseKey == null ? "" : storedProLicenseKey);
+        licenseField.setStyle(inputStyle);
 
         Label statusMsg = new Label("");
+        statusMsg.setWrapText(true);
         statusMsg.setStyle("-fx-text-fill: #fca5a5; -fx-font-size: 12px;");
 
-        Button getKeyBtn = new Button("Copy console.groq.com URL");
+        Button getKeyBtn = new Button("Get Free API Key");
         getKeyBtn.setStyle(TOP_BTN_DEFAULT_STYLE);
         getKeyBtn.setOnAction(e -> {
-            ClipboardContent cc = new ClipboardContent();
-            cc.putString("https://console.groq.com/keys");
-            Clipboard.getSystemClipboard().setContent(cc);
+            openExternalUrl("https://console.groq.com/keys");
             statusMsg.setStyle("-fx-text-fill: #6ee7b7; -fx-font-size: 12px;");
-            statusMsg.setText("Copied https://console.groq.com/keys to clipboard.");
+            statusMsg.setText("Opened console.groq.com/keys in browser & copied URL.");
         });
 
         Region spacer = new Region();
@@ -668,31 +820,52 @@ public class Controller {
         cancelBtn.setStyle(TOP_BTN_DEFAULT_STYLE);
         cancelBtn.setOnAction(e -> dialog.close());
 
-        Button saveBtn = new Button("Save Key");
-        saveBtn.setStyle(
-                "-fx-background-color: #4f46e5; "
-                + "-fx-text-fill: #ffffff; "
-                + "-fx-font-size: 13px; "
-                + "-fx-font-weight: bold; "
-                + "-fx-padding: 6px 16px; "
-                + "-fx-background-radius: 8px; "
-                + "-fx-cursor: hand;"
-        );
+        Button saveBtn = new Button("Verify & Save");
+        saveBtn.setStyle("-fx-background-color: #4f46e5; -fx-text-fill: #ffffff; -fx-font-size: 13px; -fx-font-weight: bold; -fx-padding: 7px 16px; -fx-background-radius: 8px; -fx-cursor: hand;");
         saveBtn.setOnAction(e -> {
-            String entered = keyField.getText() == null ? "" : keyField.getText().trim();
-            if (!entered.isEmpty() && !entered.startsWith("gsk_")) {
-                statusMsg.setStyle("-fx-text-fill: #fca5a5; -fx-font-size: 12px;");
-                statusMsg.setText("Groq keys normally start with 'gsk_'. Check your key.");
+            String enteredKey = maskedKeyField.getText() == null ? "" : maskedKeyField.getText().trim();
+            String enteredLic = licenseField.getText() == null ? "" : licenseField.getText().trim();
+            if (enteredKey.isEmpty()) {
+                saveConfig("", enteredLic);
+                dialog.close();
                 return;
             }
-            saveConfig(entered);
-            dialog.close();
+            if (!enteredKey.startsWith("gsk_")) {
+                statusMsg.setStyle("-fx-text-fill: #fca5a5; -fx-font-size: 12px;");
+                statusMsg.setText("Groq API keys start with 'gsk_'. Check your key.");
+                return;
+            }
+            saveBtn.setDisable(true);
+            statusMsg.setStyle("-fx-text-fill: #93c5fd; -fx-font-size: 12px;");
+            statusMsg.setText("Verifying key with Groq...");
+            new Thread(() -> {
+                int codeStatus = -1;
+                try {
+                    HttpRequest ping = HttpRequest.newBuilder()
+                            .uri(URI.create("https://api.groq.com/openai/v1/models"))
+                            .header("Authorization", "Bearer " + enteredKey)
+                            .timeout(Duration.ofSeconds(6))
+                            .GET()
+                            .build();
+                    codeStatus = httpClient.send(ping, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)).statusCode();
+                } catch (Exception ignored) {}
+                final int finalStatus = codeStatus;
+                Platform.runLater(() -> {
+                    saveBtn.setDisable(false);
+                    if (finalStatus == 401 || finalStatus == 403) {
+                        statusMsg.setStyle("-fx-text-fill: #fca5a5; -fx-font-size: 12px;");
+                        statusMsg.setText("Invalid or revoked Groq API key (HTTP " + finalStatus + ").");
+                    } else {
+                        saveConfig(enteredKey, enteredLic);
+                        dialog.close();
+                    }
+                });
+            }).start();
         });
 
         HBox buttonRow = new HBox(8, getKeyBtn, spacer, cancelBtn, saveBtn);
         buttonRow.setAlignment(Pos.CENTER_LEFT);
-
-        card.getChildren().addAll(heading, desc, keyField, statusMsg, buttonRow);
+        card.getChildren().addAll(heading, desc, apiLabel, apiRow, proLabel, licenseField, statusMsg, buttonRow);
 
         Scene dialogScene = new Scene(card);
         dialogScene.setFill(Color.TRANSPARENT);
@@ -1136,6 +1309,17 @@ public class Controller {
                     break;
                 }
             }
+
+            if (attachFileButton == null) {
+                attachFileButton = new Button("+");
+                attachFileButton.setStyle(MIC_BTN_DEFAULT_STYLE);
+                attachFileButton.setTooltip(new Tooltip("Attach code or text file (or drag & drop anywhere)"));
+                attachFileButton.setOnAction(e -> openFilePickerForAttachment());
+                bar.getChildren().add(0, attachFileButton);
+                if (sendIdx >= 0) sendIdx++;
+            }
+
+            setupDragAndDropFiles(bar);
 
             if (micButton == null) {
                 micButton = new Button("🎙");
@@ -1740,7 +1924,34 @@ public class Controller {
         boolean speakOnce = rawInput.startsWith("/voice ");
 
         String userText = rawInput.replaceFirst("^/(pro|fast|web|noweb|voice)\\s+", "").trim();
-        if (userText.isEmpty()) return;
+        List<AttachedFile> pendingFiles;
+        synchronized (attachedFiles) {
+            pendingFiles = new ArrayList<>(attachedFiles);
+            attachedFiles.clear();
+        }
+        refreshAttachmentPillBar();
+
+        if (userText.isEmpty() && pendingFiles.isEmpty()) return;
+        if (userText.isEmpty()) {
+            userText = "Analyze the attached file(s) and summarize key details, structure, and any issues.";
+        }
+
+        String displayUserText = userText;
+        String aiUserText = userText;
+        if (!pendingFiles.isEmpty()) {
+            StringBuilder badgeSb = new StringBuilder();
+            StringBuilder contextSb = new StringBuilder();
+            for (AttachedFile af : pendingFiles) {
+                badgeSb.append("📎 ").append(af.name).append("   ");
+                contextSb.append("\n\n--- ATTACHED FILE: ").append(af.name).append(" ---\n")
+                         .append(af.content)
+                         .append("\n--- END OF ").append(af.name).append(" ---");
+            }
+            displayUserText = badgeSb.toString().trim() + "\n" + userText;
+            aiUserText = userText + contextSb.toString();
+        }
+        final String finalAiUserText = aiUserText;
+        final String effectiveUserText = userText;
 
         boolean isBrandNewChat = (currentChat == null);
         if (isBrandNewChat) {
@@ -1757,7 +1968,7 @@ public class Controller {
         ChatSession targetChat = currentChat;
 
         if (currentChat == targetChat) {
-            renderBubble(userText, true);
+            renderBubble(displayUserText, true);
             updateEmptyState();
         }
 
@@ -1765,7 +1976,7 @@ public class Controller {
         activeCancelFlag.set(cancelled);
         setGeneratingUI(true);
 
-        boolean useSmartModel = !forceFast && (forcePro || needsSmartModel(userText, targetChat.history));
+        boolean useSmartModel = !forceFast && (forcePro || !pendingFiles.isEmpty() || needsSmartModel(userText, targetChat.history));
         String chosenModel = useSmartModel ? GROQ_SMART_MODEL : GROQ_FAST_MODEL;
 
         boolean needsWeb = userText.toLowerCase().matches(".*\\b(search|web|google|internet|online|lookup|look up|find out|latest|news|today|current|currently|price|weather|score|release|released|launch|launched|date|out yet|gta|2025|2026|who is|what is|when is|when did|did .* come out)\\b.*");
@@ -1887,12 +2098,12 @@ public class Controller {
 
             List<ChatMessage> historySnapshot;
             synchronized (targetChat.history) {
-                targetChat.history.add(new ChatMessage("user", userText));
+                targetChat.history.add(new ChatMessage("user", finalAiUserText));
                 historySnapshot = new ArrayList<>(targetChat.history);
             }
             saveChatsToDisk();
 
-            String webContext = needsWeb ? fetchWebContext(buildSearchQuery(userText)) : "";
+            String webContext = needsWeb ? fetchWebContext(buildSearchQuery(effectiveUserText)) : "";
             if (cancelled.get()) {
                 synchronized (targetChat.history) {
                     targetChat.history.add(new ChatMessage("assistant", "[Stopped]"));
@@ -1929,7 +2140,7 @@ public class Controller {
             saveChatsToDisk();
 
             if (!cancelled.get() && !fullReply.isBlank() && !fullReply.startsWith("Error:")) {
-                extractAndSaveUserFacts(userText, fullReply);
+                extractAndSaveUserFacts(finalAiUserText, fullReply);
             }
 
             if (!cancelled.get() && !fullReply.isBlank() && !fullReply.startsWith("Error:")
@@ -2767,15 +2978,6 @@ public class Controller {
         Platform.runLater(() -> chatScrollPane.setVvalue(1.0));
     }
 
-    private String escapeJson(String text) {
-        return text.replace("\\", "\\\\")
-                   .replace("\"", "\\\"")
-                   .replace("\n", "\\n")
-                   .replace("\r", "\\r")
-                   .replace("\t", "\\t");
-    }
-
-    private String extractChatResponseText(String json) {
-        return extractJsonField(json, "content");
-    }
+    private String escapeJson(String t){if(t==null)return "";StringBuilder s=new StringBuilder();for(char c:t.toCharArray()){if(c==92)s.append("\\\\");else if(c==34)s.append("\\\"");else if(c==10)s.append("\\n");else if(c==13)s.append("\\r");else if(c==9)s.append("\\t");else if(c<32)s.append(String.format("\\u%04x",(int)c));else s.append(c);}return s.toString();}
+    private String extractChatResponseText(String j){return extractJsonField(j,"content");}
 }
